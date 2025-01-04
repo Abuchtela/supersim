@@ -34,25 +34,33 @@ type Orchestrator struct {
 	AdminServer *admin.AdminServer
 }
 
-func NewOrchestrator(log log.Logger, closeApp context.CancelCauseFunc, networkConfig *config.NetworkConfig, adminPort uint64) (*Orchestrator, error) {
+func NewOrchestrator(log log.Logger, closeApp context.CancelCauseFunc, cliConfig *config.CLIConfig, networkConfig *config.NetworkConfig, adminPort uint64) (*Orchestrator, error) {
 	// Spin up L1 anvil instance
-	l1Anvil := anvil.New(log, closeApp, &networkConfig.L1Config)
+	l1Cfg := networkConfig.L1Config
+	if cliConfig != nil {
+		l1Cfg.OdysseyEnabled = cliConfig.OdysseyEnabled
+	}
+	l1Anvil := anvil.New(log, closeApp, &l1Cfg)
 
 	// Spin up L2 anvil instances
 	nextL2Port := networkConfig.L2StartingPort
 	l2Anvils, l2OpSims := make(map[uint64]config.Chain), make(map[uint64]*opsimulator.OpSimulator)
 	for i := range networkConfig.L2Configs {
 		cfg := networkConfig.L2Configs[i]
+
+		if cliConfig != nil {
+			cfg.OdysseyEnabled = cliConfig.OdysseyEnabled
+		}
+
 		cfg.Port = 0 // explicitly set to zero as this anvil sits behind a proxy
 
 		l2Anvil := anvil.New(log, closeApp, &cfg)
 		l2Anvils[cfg.ChainID] = l2Anvil
 	}
 
-	// Sping up OpSim to fornt the L2 instances
+	// Spin up OpSim to front the L2 instances
 	for i := range networkConfig.L2Configs {
 		cfg := networkConfig.L2Configs[i]
-
 		l2OpSims[cfg.ChainID] = opsimulator.New(log, closeApp, nextL2Port, cfg.Host, l1Anvil, l2Anvils[cfg.ChainID], l2Anvils, networkConfig.InteropDelay)
 
 		// only increment expected port if it has been specified
@@ -71,20 +79,17 @@ func NewOrchestrator(log log.Logger, closeApp context.CancelCauseFunc, networkCo
 		}
 	}
 
-	a := admin.NewAdminServer(log, adminPort, networkConfig, o.l2ToL2MsgIndexer)
-
-	o.AdminServer = a
-
+	o.AdminServer = admin.NewAdminServer(log, adminPort, networkConfig, o.l2ToL2MsgIndexer)
 	return &o, nil
 }
 
 func (o *Orchestrator) Start(ctx context.Context) error {
 	o.log.Debug("starting orchestrator")
+
 	// Start Chains
 	if err := o.l1Chain.Start(ctx); err != nil {
 		return fmt.Errorf("l1 chain %s failed to start: %w", o.l1Chain.Config().Name, err)
 	}
-
 	for _, chain := range o.l2Chains {
 		if err := chain.Start(ctx); err != nil {
 			return fmt.Errorf("l2 chain %s failed to start: %w", chain.Config().Name, err)
@@ -118,8 +123,11 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		var wg sync.WaitGroup
 		wg.Add(len(o.l2Chains))
 		errs := make([]error, len(o.l2Chains))
-		for i, chain := range o.L2Chains() {
-			go func(i int) {
+
+		// Iterate over the underlying l2Chains for configuration as it relies
+		// on deposit txs from system addresses which opsimulator will reject
+		for i, chain := range o.l2Chains {
+			go func(i uint64) {
 				if err := interop.Configure(ctx, chain); err != nil {
 					errs[i] = fmt.Errorf("failed to configure interop for chain %s: %w", chain.Config().Name, err)
 				}
@@ -128,7 +136,6 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 
 		wg.Wait()
-
 		if err := errors.Join(errs...); err != nil {
 			return err
 		}
