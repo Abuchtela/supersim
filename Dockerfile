@@ -1,6 +1,6 @@
 # The base image for the supersim image can be modified
 # by specifying BASE_IMAGE build argument
-ARG BASE_IMAGE=golang:1.24.2
+ARG BASE_IMAGE=golang:1.25.2
 
 #   .-.-.   .-.-.   .-.-.   .-.-.   .-.-.   .-.-.   .-.-.   .-.-
 #  / / \ \ / / \ \ / / \ \ / / \ \ / / \ \ / / \ \ / / \ \ / / \
